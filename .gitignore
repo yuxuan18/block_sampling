@@ -1,1 +1,8 @@
-*.mp4
+**/__pycache__
+
+**/*.mp4
+**/*.pt
+**/*.csv
+**/*.ipynb
+**/*.parquet
+**/*.npy
