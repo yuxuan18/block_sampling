@@ -7,7 +7,7 @@ def mean_lower_bound(sample_mean: float, sample_size: int, sample_std: float, fa
     return sample_mean - t.ppf(1-failure_prob, sample_size - 1) * sample_std / sample_size ** 0.5
 
 def std_upper_bound(sample_std: float, sample_size: int, failure_prob: float):
-    return sample_std * ((sample_size - 1) / chi2.ppf(failure_prob/2, sample_size - 1)) ** 0.5
+    return sample_std * ((sample_size - 1) / chi2.ppf(failure_prob, sample_size - 1)) ** 0.5
 
 def uniform_sample_size_avg(sample_mean: float, sample_std: float, sample_size: int, failure_prob: float, target_error: float) -> int:
     L_m = mean_lower_bound(sample_mean, sample_size, sample_std, failure_prob/4)
@@ -52,6 +52,9 @@ def block_sample_size_avg_predicate(population_size: int, sample_size: int, samp
     )
 
     target_sample_success = max(block_count_sample_size, block_sum_sample_size)
+
+    if sample_success == sample_size:
+        return target_sample_success
 
     success_lower = hypergeometric_successes_lower(population_size, sample_size, sample_success, failure_prob/4)
 
