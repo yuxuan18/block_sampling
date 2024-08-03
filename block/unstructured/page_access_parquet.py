@@ -12,7 +12,7 @@ from collections import defaultdict
 from typing import Callable, Tuple, Any, List
 from thriftpy2.transport import TMemoryBuffer
 from thriftpy2.protocol.compact import TCompactProtocol
-
+import time
 parquet_thrift = thriftpy2.load("block/unstructured/parquet.thrift", module_name="parquet_thrift")
 
 
@@ -233,8 +233,115 @@ def read_pages(file_index: ParquetFileIndex, read_file_func: Callable[[int,int],
     df = table.to_pandas()
     return df
 
+def seek_random_pages(timeout: int, file_index: ParquetFileIndex, read_file_func: Callable[[int,int], bytes], 
+                      meta_data: Any):
+    n_pages = file_index.get_n_pages()
+    start = time.time()
+    fetched_pages = 0
+    while time.time() - start < timeout:
+        page_index = random.randint(0, n_pages-1)
+        row_group_index = 0
+        for i, row_group in enumerate(file_index.row_groups):
+            if page_index < len(row_group.data_page_locs):
+                row_group_index = i
+                break
+            page_index -= len(row_group.data_page_locs)
+
+        file_data_bytes = b""
+        row_groups_meta_data = []
+        row_group_meta_data = meta_data.row_groups[row_group_index]
+        row_group_bytes = b""
+        row_group = file_index.row_groups[row_group_index]
+        # fetch the dictionary page
+        row_group_meta_data.columns[0].meta_data.dictionary_page_offset = len(file_data_bytes) + 4
+        dictionary_page_offset = row_group.offset
+        dictionary_page_length = row_group.data_page_offset - row_group.offset
+        row_group_bytes += read_file_func(dictionary_page_offset, dictionary_page_length)
+        # fetch the data pages
+        row_group_meta_data.columns[0].meta_data.data_page_offset = len(file_data_bytes) + 4
+        data_page_loc = row_group.data_page_locs[page_index]
+        row_group_bytes += read_file_func(data_page_loc.offset, data_page_loc.size)
+        # finalize
+        row_group_meta_data.columns[0].meta_data.total_compressed_size = len(row_group_bytes)
+        file_data_bytes += row_group_bytes
+        row_groups_meta_data.append(row_group_meta_data)
+
+        new_meta_data = deepcopy(meta_data)
+        new_meta_data.row_groups = row_groups_meta_data
+
+        transport = TMemoryBuffer()
+        protocol = TCompactProtocol(transport)
+        new_meta_data.write(protocol)
+        meta_data_bytes = transport.getvalue()
 
 
+        len_meta_data = len(meta_data_bytes)
+        meta_data_length_bytes = struct.pack('<I', len_meta_data)
+        file_data_bytes = b'PAR1' + file_data_bytes + meta_data_bytes + meta_data_length_bytes + b'PAR1'
+
+        # read the bytes as a complete parquet file
+        file_buffer = io.BytesIO(file_data_bytes)
+        table = pq.read_table(file_buffer)
+        df = table.to_pandas()
+        fetched_pages += 1
+    return fetched_pages
+
+def seek_random_record(timeout: int, file_index: ParquetFileIndex, read_file_func: Callable[[int, int], bytes],
+                       meta_data: Any):
+    n_pages = file_index.get_n_pages()
+    start = time.time()
+    seeked_pages = set()
+    n_records = 0
+    while time.time() - start < timeout:
+        record_index = random.randint(0, n_pages*6400-1)
+        page_index = record_index // 6400
+        if page_index in seeked_pages:
+            n_records += 1
+            continue
+        row_group_index = 0
+        for i, row_group in enumerate(file_index.row_groups):
+            if page_index < len(row_group.data_page_locs):
+                row_group_index = i
+                break
+            page_index -= len(row_group.data_page_locs)
+
+        file_data_bytes = b""
+        row_groups_meta_data = []
+        row_group_meta_data = meta_data.row_groups[row_group_index]
+        row_group_bytes = b""
+        row_group = file_index.row_groups[row_group_index]
+        # fetch the dictionary page
+        row_group_meta_data.columns[0].meta_data.dictionary_page_offset = len(file_data_bytes) + 4
+        dictionary_page_offset = row_group.offset
+        dictionary_page_length = row_group.data_page_offset - row_group.offset
+        row_group_bytes += read_file_func(dictionary_page_offset, dictionary_page_length)
+        # fetch the data pages
+        row_group_meta_data.columns[0].meta_data.data_page_offset = len(file_data_bytes) + 4
+        data_page_loc = row_group.data_page_locs[page_index]
+        row_group_bytes += read_file_func(data_page_loc.offset, data_page_loc.size)
+        # finalize
+        row_group_meta_data.columns[0].meta_data.total_compressed_size = len(row_group_bytes)
+        file_data_bytes += row_group_bytes
+        row_groups_meta_data.append(row_group_meta_data)
+
+        new_meta_data = deepcopy(meta_data)
+        new_meta_data.row_groups = row_groups_meta_data
+
+        transport = TMemoryBuffer()
+        protocol = TCompactProtocol(transport)
+        new_meta_data.write(protocol)
+        meta_data_bytes = transport.getvalue()
+
+        len_meta_data = len(meta_data_bytes)
+        meta_data_length_bytes = struct.pack('<I', len_meta_data)
+        file_data_bytes = b'PAR1' + file_data_bytes + meta_data_bytes + meta_data_length_bytes + b'PAR1'
+
+        # read the bytes as a complete parquet file
+        file_buffer = io.BytesIO(file_data_bytes)
+        table = pq.read_table(file_buffer)
+        df = table.to_pandas()
+        n_records += 1
+    return n_records
 
 if __name__ == "__main__":
     file_path = "tweet.parquet"
